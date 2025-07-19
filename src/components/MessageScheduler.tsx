@@ -1,11 +1,19 @@
 import { useState } from "react";
-import { Calendar, Clock, Phone, MessageCircle, Send, Users, Edit, Trash2, Copy, RotateCcw, History } from "lucide-react";
+import { Calendar, Clock, Phone, MessageCircle, Send, Users, Edit, Trash2, Copy, RotateCcw, History, Paperclip, FileText, Image, Video, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
+
+interface AttachedFile {
+  id: string;
+  name: string;
+  path: string;
+  type: 'image' | 'video' | 'document';
+  size: number;
+}
 
 interface ScheduledMessage {
   id: string;
@@ -14,6 +22,7 @@ interface ScheduledMessage {
   scheduledDate: Date;
   status: 'pending' | 'sent' | 'failed';
   createdAt: Date;
+  attachments?: AttachedFile[];
 }
 
 export const MessageScheduler = () => {
@@ -25,6 +34,7 @@ export const MessageScheduler = () => {
   const [messageHistory, setMessageHistory] = useState<ScheduledMessage[]>([]);
   const [activeTab, setActiveTab] = useState<'compose' | 'scheduled' | 'history'>('compose');
   const [editingMessage, setEditingMessage] = useState<ScheduledMessage | null>(null);
+  const [attachments, setAttachments] = useState<AttachedFile[]>([]);
 
   const handleScheduleMessage = () => {
     if (!phoneNumber || !message || !scheduledDate || !scheduledTime) return;
@@ -35,7 +45,8 @@ export const MessageScheduler = () => {
       message,
       scheduledDate: new Date(`${scheduledDate}T${scheduledTime}`),
       status: 'pending',
-      createdAt: editingMessage?.createdAt || new Date()
+      createdAt: editingMessage?.createdAt || new Date(),
+      attachments: attachments.length > 0 ? [...attachments] : undefined
     };
 
     if (editingMessage) {
@@ -50,6 +61,49 @@ export const MessageScheduler = () => {
     setMessage("");
     setScheduledDate("");
     setScheduledTime("");
+    setAttachments([]);
+  };
+
+  const handleFileAttachment = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files) return;
+
+    const newAttachments: AttachedFile[] = Array.from(files).map(file => {
+      const fileType = file.type.startsWith('image/') ? 'image' : 
+                      file.type.startsWith('video/') ? 'video' : 'document';
+      
+      return {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        name: file.name,
+        path: URL.createObjectURL(file), // Temporary path for preview
+        type: fileType,
+        size: file.size
+      };
+    });
+
+    setAttachments(prev => [...prev, ...newAttachments]);
+    event.target.value = ''; // Reset input
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments(prev => prev.filter(att => att.id !== id));
+  };
+
+  const getFileIcon = (type: string) => {
+    switch (type) {
+      case 'image': return <Image className="h-4 w-4" />;
+      case 'video': return <Video className="h-4 w-4" />;
+      case 'document': return <FileText className="h-4 w-4" />;
+      default: return <FileText className="h-4 w-4" />;
+    }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
   const handleEditMessage = (msg: ScheduledMessage) => {
@@ -58,6 +112,7 @@ export const MessageScheduler = () => {
     setMessage(msg.message);
     setScheduledDate(format(msg.scheduledDate, 'yyyy-MM-dd'));
     setScheduledTime(format(msg.scheduledDate, 'HH:mm'));
+    setAttachments(msg.attachments || []);
     setActiveTab('compose');
   };
 
@@ -119,6 +174,24 @@ export const MessageScheduler = () => {
         </div>
       </div>
       <p className="text-xs sm:text-sm text-muted-foreground mb-2 line-clamp-2">{msg.message}</p>
+      
+      {/* Attachments Display */}
+      {msg.attachments && msg.attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-2">
+          {msg.attachments.map((file) => (
+            <div key={file.id} className="flex items-center gap-1 px-2 py-1 bg-muted/70 rounded text-xs">
+              {getFileIcon(file.type)}
+              <span className="truncate max-w-[100px]">{file.name}</span>
+            </div>
+          ))}
+          {msg.attachments.length > 3 && (
+            <div className="px-2 py-1 bg-muted/70 rounded text-xs">
+              +{msg.attachments.length - 3} more
+            </div>
+          )}
+        </div>
+      )}
+      
       <div className="text-xs text-muted-foreground">
         {format(msg.scheduledDate, "MMM dd, yyyy 'at' HH:mm")}
       </div>
@@ -186,6 +259,7 @@ export const MessageScheduler = () => {
                     setMessage("");
                     setScheduledDate("");
                     setScheduledTime("");
+                    setAttachments([]);
                   }}
                 >
                   Cancel Edit
@@ -222,6 +296,51 @@ export const MessageScheduler = () => {
                 <div className="text-right text-sm text-muted-foreground">
                   {message.length}/1000
                 </div>
+              </div>
+
+              {/* Attachments Section */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <Paperclip className="h-4 w-4 text-whatsapp" />
+                  Attachments
+                </label>
+                <div className="flex gap-2">
+                  <label className="flex-1 cursor-pointer">
+                    <Input
+                      type="file"
+                      multiple
+                      onChange={handleFileAttachment}
+                      className="hidden"
+                      accept="image/*,video/*,.pdf,.doc,.docx,.txt"
+                    />
+                    <Button variant="outline" className="w-full" type="button">
+                      <Paperclip className="h-4 w-4 mr-2" />
+                      Attach Files
+                    </Button>
+                  </label>
+                </div>
+                
+                {/* Attached Files Display */}
+                {attachments.length > 0 && (
+                  <div className="space-y-2">
+                    {attachments.map((file) => (
+                      <div key={file.id} className="flex items-center gap-2 p-2 border rounded-lg bg-muted/50">
+                        {getFileIcon(file.type)}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{file.name}</p>
+                          <p className="text-xs text-muted-foreground">{formatFileSize(file.size)}</p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeAttachment(file.id)}
+                        >
+                          <X className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
