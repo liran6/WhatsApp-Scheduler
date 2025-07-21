@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Calendar, Clock, Phone, MessageCircle, Send, Users, Edit, Trash2, Copy, RotateCcw, History, Paperclip, FileText, Image, Video, X } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Calendar, Clock, Phone, MessageCircle, Send, Users, Edit, Trash2, Copy, RotateCcw, History, Paperclip, FileText, Image, Video, X, ExternalLink } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -26,6 +27,7 @@ interface ScheduledMessage {
 }
 
 export const MessageScheduler = () => {
+  const { toast } = useToast();
   const [phoneNumber, setPhoneNumber] = useState("");
   const [message, setMessage] = useState("");
   const [scheduledDate, setScheduledDate] = useState("");
@@ -35,6 +37,89 @@ export const MessageScheduler = () => {
   const [activeTab, setActiveTab] = useState<'compose' | 'scheduled' | 'history'>('compose');
   const [editingMessage, setEditingMessage] = useState<ScheduledMessage | null>(null);
   const [attachments, setAttachments] = useState<AttachedFile[]>([]);
+
+  // Load data from localStorage on component mount
+  useEffect(() => {
+    const savedScheduledMessages = localStorage.getItem('scheduledMessages');
+    const savedMessageHistory = localStorage.getItem('messageHistory');
+    
+    if (savedScheduledMessages) {
+      try {
+        const parsed = JSON.parse(savedScheduledMessages);
+        const messagesWithDates = parsed.map((msg: any) => ({
+          ...msg,
+          scheduledDate: new Date(msg.scheduledDate),
+          createdAt: new Date(msg.createdAt)
+        }));
+        setScheduledMessages(messagesWithDates);
+      } catch (error) {
+        console.error('Error loading scheduled messages:', error);
+      }
+    }
+    
+    if (savedMessageHistory) {
+      try {
+        const parsed = JSON.parse(savedMessageHistory);
+        const historyWithDates = parsed.map((msg: any) => ({
+          ...msg,
+          scheduledDate: new Date(msg.scheduledDate),
+          createdAt: new Date(msg.createdAt)
+        }));
+        setMessageHistory(historyWithDates);
+      } catch (error) {
+        console.error('Error loading message history:', error);
+      }
+    }
+  }, []);
+
+  // Save to localStorage whenever scheduledMessages changes
+  useEffect(() => {
+    localStorage.setItem('scheduledMessages', JSON.stringify(scheduledMessages));
+  }, [scheduledMessages]);
+
+  // Save to localStorage whenever messageHistory changes
+  useEffect(() => {
+    localStorage.setItem('messageHistory', JSON.stringify(messageHistory));
+  }, [messageHistory]);
+
+  // Check for scheduled messages every minute
+  useEffect(() => {
+    const checkScheduledMessages = () => {
+      const now = new Date();
+      scheduledMessages.forEach(msg => {
+        if (msg.status === 'pending' && msg.scheduledDate <= now) {
+          openWhatsAppMessage(msg);
+        }
+      });
+    };
+
+    const interval = setInterval(checkScheduledMessages, 60000); // Check every minute
+    return () => clearInterval(interval);
+  }, [scheduledMessages]);
+
+  const openWhatsAppMessage = (msg: ScheduledMessage) => {
+    const phoneNumber = msg.phoneNumber.replace(/[^\d]/g, ''); // Remove non-digits
+    const encodedMessage = encodeURIComponent(msg.message);
+    const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodedMessage}`;
+    
+    // Update message status
+    setScheduledMessages(prev => 
+      prev.map(m => m.id === msg.id ? { ...m, status: 'sent' as const } : m)
+    );
+    
+    // Move to history
+    setTimeout(() => {
+      moveToHistory({ ...msg, status: 'sent' });
+    }, 1000);
+    
+    // Open WhatsApp
+    window.open(whatsappUrl, '_blank');
+    
+    toast({
+      title: "Message Ready!",
+      description: `WhatsApp opened with your message to ${msg.phoneNumber}. Just tap Send!`,
+    });
+  };
 
   const handleScheduleMessage = () => {
     if (!phoneNumber || !message || !scheduledDate || !scheduledTime) return;
@@ -169,6 +254,16 @@ export const MessageScheduler = () => {
               <Button variant="ghost" size="sm" onClick={() => handleCopyMessage(msg)}>
                 <Copy className="h-3 w-3" />
               </Button>
+              {!isHistory && msg.status === 'pending' && (
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => openWhatsAppMessage(msg)}
+                  className="text-whatsapp hover:text-whatsapp-dark"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                </Button>
+              )}
             </div>
           )}
         </div>
