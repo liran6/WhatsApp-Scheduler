@@ -105,17 +105,38 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     return () => clearInterval(interval);
   }, [scheduledMessages]);
 
-  const openWhatsApp = (phoneNumber: string, message: string) => {
+  const openWhatsApp = async (phoneNumber: string, message: string) => {
     const cleanPhoneNumber = phoneNumber.replace(/[^\d]/g, '');
     const encodedMessage = encodeURIComponent(message);
-    const whatsappUrl = `https://wa.me/${cleanPhoneNumber}?text=${encodedMessage}`;
     
-    window.open(whatsappUrl, '_blank');
-    
-    toast({
-      title: "WhatsApp Opened!",
-      description: `Message ready to send to ${phoneNumber}`,
-    });
+    // Try to open WhatsApp natively first
+    try {
+      // For native app, use the whatsapp:// scheme
+      const whatsappUrl = `whatsapp://send?phone=${cleanPhoneNumber}&text=${encodedMessage}`;
+      
+      // Check if we're in a native environment
+      if ((window as any).Capacitor?.isNativePlatform()) {
+        // Use Capacitor's Browser plugin to open URL
+        const { Browser } = await import('@capacitor/browser');
+        await Browser.open({ url: whatsappUrl });
+      } else {
+        // Fallback to web URL for browser
+        const webUrl = `https://wa.me/${cleanPhoneNumber}?text=${encodedMessage}`;
+        window.open(webUrl, '_blank');
+      }
+      
+      toast({
+        title: "WhatsApp Opened!",
+        description: `Message ready to send to ${phoneNumber}`,
+      });
+    } catch (error) {
+      console.error('Error opening WhatsApp:', error);
+      toast({
+        title: "Error",
+        description: "Could not open WhatsApp. Make sure it's installed on your device.",
+        variant: "destructive",
+      });
+    }
   };
 
   const scheduleMessage = async () => {
