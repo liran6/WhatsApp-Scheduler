@@ -1,7 +1,7 @@
 import { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'app.lovable.91eaf32abdb64f29849826f8579a863f',
+  appId: 'com.lovable.messagemomentmagic',
   appName: 'message-moment-magic',
   webDir: 'dist',
   server: {
