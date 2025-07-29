@@ -83,39 +83,35 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
 
   // Setup notifications and permissions
   const setupNotifications = async () => {
-    if (!Capacitor.isNativePlatform()) {
-      // For web, request browser notification permission
-      if ('Notification' in window && Notification.permission === 'default') {
-        await Notification.requestPermission();
-      }
-      return;
-    }
-
     try {
-      // Request notification permissions for native
-      const result = await LocalNotifications.requestPermissions();
-      if (result.display !== 'granted') {
-        toast({
-          title: "Notifications Required",
-          description: "Please enable notifications to receive message reminders",
-          variant: "destructive",
-        });
-      }
-
-      // Set up notification click handlers
-      await LocalNotifications.addListener('localNotificationReceived', async (notification) => {
-        console.log('Notification received:', notification);
-      });
-
-      await LocalNotifications.addListener('localNotificationActionPerformed', async (notification) => {
-        const { notification: notif } = notification;
-        if (notif.extra?.messageId) {
-          // Find the message and open WhatsApp
-          const messageData = notif.extra;
-          await openWhatsApp(messageData.phoneNumber, messageData.message);
-          await updateMessageStatus(messageData.messageId, 'sent');
+      if (Capacitor.isNativePlatform()) {
+        // Request notification permissions for native
+        const result = await LocalNotifications.requestPermissions();
+        if (result.display !== 'granted') {
+          toast({
+            title: "Notifications Required",
+            description: "Please enable notifications to receive message reminders",
+            variant: "destructive",
+          });
         }
-      });
+
+        // Set up notification click handlers
+        await LocalNotifications.addListener('localNotificationActionPerformed', async (notificationAction) => {
+          const { notification } = notificationAction;
+          if (notification.extra?.messageId) {
+            // Find the message and open WhatsApp
+            const messageData = notification.extra;
+            await openWhatsApp(messageData.phoneNumber, messageData.message);
+            await updateMessageStatus(messageData.messageId, 'sent');
+            await loadMessages(); // Refresh the messages list
+          }
+        });
+      } else {
+        // For web, request browser notification permission
+        if ('Notification' in window && Notification.permission === 'default') {
+          await Notification.requestPermission();
+        }
+      }
     } catch (error) {
       console.error('Error setting up notifications:', error);
     }
@@ -124,23 +120,32 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
   // Schedule notification for message
   const scheduleNotification = async (messageId: string, phoneNumber: string, message: string, scheduledTime: Date) => {
     try {
-      if (Capacitor.isNativePlatform()) {
+      console.log('Scheduling notification for:', scheduledTime, 'Platform:', Capacitor.getPlatform());
+      
+      if (Capacitor.getPlatform() !== 'web') {
         // Schedule native notification
+        const notificationId = Math.floor(Math.random() * 1000000);
         await LocalNotifications.schedule({
           notifications: [
             {
               title: "WhatsApp Message Reminder",
               body: `Time to send message to ${phoneNumber}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
-              id: parseInt(messageId.replace(/\D/g, '').substring(0, 8) || '1'),
+              id: notificationId,
               schedule: { at: scheduledTime },
               sound: 'default',
-              extra: { messageId, phoneNumber, message }
+              extra: { messageId, phoneNumber, message },
+              actionTypeId: 'SEND_MESSAGE',
+              attachments: [],
+              summaryArgument: ''
             }
           ]
         });
+        console.log('Native notification scheduled with ID:', notificationId);
       } else {
         // Schedule browser notification using setTimeout
         const timeUntilScheduled = scheduledTime.getTime() - Date.now();
+        console.log('Time until scheduled (ms):', timeUntilScheduled);
+        
         if (timeUntilScheduled > 0) {
           setTimeout(() => {
             if (Notification.permission === 'granted') {
@@ -154,6 +159,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
                 window.focus();
                 openWhatsApp(phoneNumber, message);
                 updateMessageStatus(messageId, 'sent');
+                loadMessages(); // Refresh the messages list
                 notification.close();
               };
             }
@@ -162,11 +168,18 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
       }
     } catch (error) {
       console.error('Error scheduling notification:', error);
+      toast({
+        title: "Warning",
+        description: "Failed to schedule notification, but message was saved",
+        variant: "destructive",
+      });
     }
   };
 
   const selectContact = async () => {
-    if (!Capacitor.isNativePlatform()) {
+    console.log('Platform check:', Capacitor.getPlatform(), Capacitor.isNativePlatform());
+    
+    if (Capacitor.getPlatform() === 'web') {
       toast({
         title: "Info",
         description: "Contact selection is only available on mobile devices",
@@ -213,18 +226,14 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     const cleanPhoneNumber = phoneNumber.replace(/[^\d]/g, '');
     const encodedMessage = encodeURIComponent(message);
     
-    // Try to open WhatsApp natively first
     try {
-      // For native app, use the whatsapp:// scheme
-      const whatsappUrl = `whatsapp://send?phone=${cleanPhoneNumber}&text=${encodedMessage}`;
-      
-      // Check if we're in a native environment
-      if ((window as any).Capacitor?.isNativePlatform()) {
-        // Use Capacitor's Browser plugin to open URL
+      if (Capacitor.getPlatform() !== 'web') {
+        // For native platforms, try to open WhatsApp app directly
+        const whatsappUrl = `whatsapp://send?phone=${cleanPhoneNumber}&text=${encodedMessage}`;
         const { Browser } = await import('@capacitor/browser');
         await Browser.open({ url: whatsappUrl });
       } else {
-        // Fallback to web URL for browser
+        // For web, use wa.me link
         const webUrl = `https://wa.me/${cleanPhoneNumber}?text=${encodedMessage}`;
         window.open(webUrl, '_blank');
       }
