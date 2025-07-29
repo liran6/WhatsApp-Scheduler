@@ -12,6 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { Trash2, MessageSquare, Clock, Send, LogOut, ContactIcon, PlusIcon, History } from 'lucide-react';
 import { Contacts } from '@capacitor-community/contacts';
 import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 interface ScheduledMessage {
   id: string;
@@ -77,49 +78,92 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
 
   useEffect(() => {
     loadMessages();
+    setupNotifications();
   }, [user]);
 
-  // Real-time subscription for scheduled messages
-  useEffect(() => {
-    if (!user) return;
+  // Setup notifications and permissions
+  const setupNotifications = async () => {
+    if (!Capacitor.isNativePlatform()) {
+      // For web, request browser notification permission
+      if ('Notification' in window && Notification.permission === 'default') {
+        await Notification.requestPermission();
+      }
+      return;
+    }
 
-    const channel = supabase
-      .channel('scheduled_messages_changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'scheduled_messages',
-          filter: `user_id=eq.${user.id}`
-        },
-        () => {
-          loadMessages();
-        }
-      )
-      .subscribe();
+    try {
+      // Request notification permissions for native
+      const result = await LocalNotifications.requestPermissions();
+      if (result.display !== 'granted') {
+        toast({
+          title: "Notifications Required",
+          description: "Please enable notifications to receive message reminders",
+          variant: "destructive",
+        });
+      }
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [user]);
-
-  // Check for due messages every minute
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const now = new Date();
-      const dueMessages = scheduledMessages.filter(msg => 
-        msg.status === 'pending' && new Date(msg.scheduled_time) <= now
-      );
-
-      dueMessages.forEach(msg => {
-        openWhatsApp(msg.phone_number, msg.message);
-        updateMessageStatus(msg.id, 'sent');
+      // Set up notification click handlers
+      await LocalNotifications.addListener('localNotificationReceived', async (notification) => {
+        console.log('Notification received:', notification);
       });
-    }, 60000); // Check every minute
 
-    return () => clearInterval(interval);
-  }, [scheduledMessages]);
+      await LocalNotifications.addListener('localNotificationActionPerformed', async (notification) => {
+        const { notification: notif } = notification;
+        if (notif.extra?.messageId) {
+          // Find the message and open WhatsApp
+          const messageData = notif.extra;
+          await openWhatsApp(messageData.phoneNumber, messageData.message);
+          await updateMessageStatus(messageData.messageId, 'sent');
+        }
+      });
+    } catch (error) {
+      console.error('Error setting up notifications:', error);
+    }
+  };
+
+  // Schedule notification for message
+  const scheduleNotification = async (messageId: string, phoneNumber: string, message: string, scheduledTime: Date) => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        // Schedule native notification
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              title: "WhatsApp Message Reminder",
+              body: `Time to send message to ${phoneNumber}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
+              id: parseInt(messageId.replace(/\D/g, '').substring(0, 8) || '1'),
+              schedule: { at: scheduledTime },
+              sound: 'default',
+              extra: { messageId, phoneNumber, message }
+            }
+          ]
+        });
+      } else {
+        // Schedule browser notification using setTimeout
+        const timeUntilScheduled = scheduledTime.getTime() - Date.now();
+        if (timeUntilScheduled > 0) {
+          setTimeout(() => {
+            if (Notification.permission === 'granted') {
+              const notification = new Notification("WhatsApp Message Reminder", {
+                body: `Time to send message to ${phoneNumber}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
+                icon: '/favicon.ico',
+                tag: messageId
+              });
+              
+              notification.onclick = () => {
+                window.focus();
+                openWhatsApp(phoneNumber, message);
+                updateMessageStatus(messageId, 'sent');
+                notification.close();
+              };
+            }
+          }, timeUntilScheduled);
+        }
+      }
+    } catch (error) {
+      console.error('Error scheduling notification:', error);
+    }
+  };
 
   const selectContact = async () => {
     if (!Capacitor.isNativePlatform()) {
@@ -232,7 +276,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     setLoading(true);
 
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('scheduled_messages')
         .insert({
           user_id: user.id,
@@ -240,9 +284,14 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
           message,
           scheduled_time: scheduledDateTime.toISOString(),
           status: 'pending'
-        });
+        })
+        .select()
+        .single();
 
       if (error) throw error;
+
+      // Schedule notification
+      await scheduleNotification(data.id, phoneNumber, message, scheduledDateTime);
 
       // Clear form
       setPhoneNumber('');
@@ -252,7 +301,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
 
       toast({
         title: "Success",
-        description: "Message scheduled successfully!",
+        description: "Message scheduled successfully with notification!",
       });
     } catch (error) {
       console.error('Error scheduling message:', error);
