@@ -12,6 +12,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { Trash2, MessageSquare, Clock, Send, LogOut, ContactIcon, PlusIcon, History } from 'lucide-react';
 import { Contacts } from '@capacitor-community/contacts';
 import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 
 interface ScheduledMessage {
   id: string;
@@ -77,6 +78,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
 
   useEffect(() => {
     loadMessages();
+    setupNotificationPermissions();
   }, [user]);
 
   // Real-time subscription for scheduled messages
@@ -104,7 +106,82 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     };
   }, [user]);
 
-  // Check for due messages every minute
+  // Setup notification permissions and listeners
+  const setupNotificationPermissions = async () => {
+    if (!Capacitor.isNativePlatform()) {
+      // For web, we'll use browser notifications
+      if ('Notification' in window && Notification.permission === 'default') {
+        await Notification.requestPermission();
+      }
+      return;
+    }
+
+    try {
+      // Request permissions for native notifications
+      const permission = await LocalNotifications.requestPermissions();
+      
+      if (permission.display === 'granted') {
+        // Listen for notification actions
+        LocalNotifications.addListener('localNotificationActionPerformed', (notification) => {
+          const messageData = JSON.parse(notification.notification.extra?.data || '{}');
+          if (messageData.phoneNumber && messageData.message) {
+            openWhatsApp(messageData.phoneNumber, messageData.message);
+            updateMessageStatus(messageData.messageId, 'sent');
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error setting up notifications:', error);
+    }
+  };
+
+  const scheduleNotification = async (messageId: string, phoneNumber: string, message: string, scheduledTime: Date) => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        // Schedule native notification
+        await LocalNotifications.schedule({
+          notifications: [
+            {
+              title: 'WhatsApp Message Ready',
+              body: `Time to send message to ${phoneNumber}`,
+              id: parseInt(messageId.slice(-8), 16), // Use last 8 chars of UUID as number
+              schedule: { at: scheduledTime },
+              actionTypeId: 'SEND_MESSAGE',
+              extra: {
+                data: JSON.stringify({
+                  messageId,
+                  phoneNumber,
+                  message
+                })
+              }
+            }
+          ]
+        });
+      } else {
+        // For web, use browser notification with setTimeout
+        const timeUntilScheduled = scheduledTime.getTime() - Date.now();
+        if (timeUntilScheduled > 0) {
+          setTimeout(() => {
+            if ('Notification' in window && Notification.permission === 'granted') {
+              const notification = new Notification('WhatsApp Message Ready', {
+                body: `Time to send message to ${phoneNumber}`,
+                icon: '/favicon.ico',
+                data: { messageId, phoneNumber, message }
+              });
+              
+              notification.onclick = () => {
+                openWhatsApp(phoneNumber, message);
+                updateMessageStatus(messageId, 'sent');
+                notification.close();
+              };
+            }
+          }, timeUntilScheduled);
+        }
+      }
+    } catch (error) {
+      console.error('Error scheduling notification:', error);
+    }
+  // Check for due messages every minute (fallback for when notifications don't work)
   useEffect(() => {
     const interval = setInterval(() => {
       const now = new Date();
@@ -249,6 +326,21 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
       setMessage('');
       setScheduledDate('');
       setScheduledTime('');
+
+      // Schedule notification for the message
+      const insertedData = await supabase
+        .from('scheduled_messages')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('phone_number', phoneNumber)
+        .eq('message', message)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (insertedData.data) {
+        await scheduleNotification(insertedData.data.id, phoneNumber, message, scheduledDateTime);
+      }
 
       toast({
         title: "Success",
