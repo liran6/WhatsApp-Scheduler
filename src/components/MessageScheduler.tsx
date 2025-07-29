@@ -25,6 +25,14 @@ interface ScheduledMessage {
   updated_at: string;
 }
 
+interface EditingMessage {
+  id: string;
+  phone_number: string;
+  message: string;
+  scheduled_date: string;
+  scheduled_time: string;
+}
+
 interface MessageSchedulerProps {
   onSignOut: () => void;
 }
@@ -38,6 +46,8 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
   const [sentMessages, setSentMessages] = useState<ScheduledMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [contactsLoading, setContactsLoading] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<EditingMessage | null>(null);
+  const [bulkPhoneNumbers, setBulkPhoneNumbers] = useState('');
   const { toast } = useToast();
   const { user } = useAuth();
 
@@ -84,9 +94,13 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
   // Setup notifications and permissions
   const setupNotifications = async () => {
     try {
+      console.log('Setting up notifications, platform:', Capacitor.getPlatform(), 'isNative:', Capacitor.isNativePlatform());
+      
       if (Capacitor.isNativePlatform()) {
         // Request notification permissions for native
         const result = await LocalNotifications.requestPermissions();
+        console.log('Notification permission result:', result);
+        
         if (result.display !== 'granted') {
           toast({
             title: "Notifications Required",
@@ -97,6 +111,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
 
         // Set up notification click handlers
         await LocalNotifications.addListener('localNotificationActionPerformed', async (notificationAction) => {
+          console.log('Notification clicked:', notificationAction);
           const { notification } = notificationAction;
           if (notification.extra?.messageId) {
             // Find the message and open WhatsApp
@@ -109,7 +124,8 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
       } else {
         // For web, request browser notification permission
         if ('Notification' in window && Notification.permission === 'default') {
-          await Notification.requestPermission();
+          const permission = await Notification.requestPermission();
+          console.log('Browser notification permission:', permission);
         }
       }
     } catch (error) {
@@ -122,7 +138,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     try {
       console.log('Scheduling notification for:', scheduledTime, 'Platform:', Capacitor.getPlatform());
       
-      if (Capacitor.getPlatform() !== 'web') {
+      if (Capacitor.isNativePlatform()) {
         // Schedule native notification
         const notificationId = Math.floor(Math.random() * 1000000);
         await LocalNotifications.schedule({
@@ -179,7 +195,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
   const selectContact = async () => {
     console.log('Platform check:', Capacitor.getPlatform(), Capacitor.isNativePlatform());
     
-    if (Capacitor.getPlatform() === 'web') {
+    if (!Capacitor.isNativePlatform()) {
       toast({
         title: "Info",
         description: "Contact selection is only available on mobile devices",
@@ -227,7 +243,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     const encodedMessage = encodeURIComponent(message);
     
     try {
-      if (Capacitor.getPlatform() !== 'web') {
+      if (Capacitor.isNativePlatform()) {
         // For native platforms, try to open WhatsApp app directly
         const whatsappUrl = `whatsapp://send?phone=${cleanPhoneNumber}&text=${encodedMessage}`;
         const { Browser } = await import('@capacitor/browser');
@@ -253,7 +269,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
   };
 
   const scheduleMessage = async () => {
-    if (!phoneNumber || !message || !scheduledDate || !scheduledTime) {
+    if (!message || !scheduledDate || !scheduledTime) {
       toast({
         title: "Error",
         description: "Please fill in all fields",
@@ -266,6 +282,20 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
       toast({
         title: "Error",
         description: "You must be logged in to schedule messages",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Handle multiple phone numbers
+    const phoneNumbers = bulkPhoneNumbers ? 
+      bulkPhoneNumbers.split(',').map(num => num.trim()).filter(num => num) :
+      phoneNumber ? [phoneNumber] : [];
+
+    if (phoneNumbers.length === 0) {
+      toast({
+        title: "Error",
+        description: "Please enter at least one phone number",
         variant: "destructive",
       });
       return;
@@ -285,38 +315,102 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
     setLoading(true);
 
     try {
+      // Create messages for all phone numbers
+      const messagesToInsert = phoneNumbers.map(phone => ({
+        user_id: user.id,
+        phone_number: phone,
+        message,
+        scheduled_time: scheduledDateTime.toISOString(),
+        status: 'pending' as const
+      }));
+
       const { data, error } = await supabase
         .from('scheduled_messages')
-        .insert({
-          user_id: user.id,
-          phone_number: phoneNumber,
-          message,
-          scheduled_time: scheduledDateTime.toISOString(),
-          status: 'pending'
-        })
-        .select()
-        .single();
+        .insert(messagesToInsert)
+        .select();
 
       if (error) throw error;
 
-      // Schedule notification
-      await scheduleNotification(data.id, phoneNumber, message, scheduledDateTime);
+      // Schedule notifications for all messages
+      for (const messageData of data) {
+        await scheduleNotification(messageData.id, messageData.phone_number, message, scheduledDateTime);
+      }
+
+      await loadMessages();
 
       // Clear form
       setPhoneNumber('');
+      setBulkPhoneNumbers('');
       setMessage('');
       setScheduledDate('');
       setScheduledTime('');
 
       toast({
         title: "Success",
-        description: "Message scheduled successfully with notification!",
+        description: `${phoneNumbers.length} message(s) scheduled successfully!`,
       });
     } catch (error) {
       console.error('Error scheduling message:', error);
       toast({
         title: "Error",
         description: "Failed to schedule message",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const updateMessage = async () => {
+    if (!editingMessage || !editingMessage.message || !editingMessage.scheduled_date || !editingMessage.scheduled_time) {
+      toast({
+        title: "Error",
+        description: "Please fill in all fields",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const scheduledDateTime = new Date(`${editingMessage.scheduled_date}T${editingMessage.scheduled_time}`);
+    
+    if (scheduledDateTime <= new Date()) {
+      toast({
+        title: "Error",
+        description: "Please select a future date and time",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const { error } = await supabase
+        .from('scheduled_messages')
+        .update({
+          phone_number: editingMessage.phone_number,
+          message: editingMessage.message,
+          scheduled_time: scheduledDateTime.toISOString(),
+        })
+        .eq('id', editingMessage.id);
+
+      if (error) throw error;
+
+      // Re-schedule notification
+      await scheduleNotification(editingMessage.id, editingMessage.phone_number, editingMessage.message, scheduledDateTime);
+
+      await loadMessages();
+      setEditingMessage(null);
+
+      toast({
+        title: "Success",
+        description: "Message updated successfully!",
+      });
+    } catch (error) {
+      console.error('Error updating message:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update message",
         variant: "destructive",
       });
     } finally {
@@ -414,7 +508,7 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
             <CardContent className="space-y-4">
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone Number</Label>
+                  <Label htmlFor="phone">Single Phone Number</Label>
                   <div className="flex gap-2">
                     <Input
                       id="phone"
@@ -422,17 +516,28 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
                       value={phoneNumber}
                       onChange={(e) => setPhoneNumber(e.target.value)}
                       className="flex-1"
+                      disabled={!!bulkPhoneNumbers}
                     />
                     <Button
                       type="button"
                       variant="outline"
                       onClick={selectContact}
-                      disabled={contactsLoading}
+                      disabled={contactsLoading || !!bulkPhoneNumbers}
                       className="px-3"
                     >
                       <ContactIcon className="h-4 w-4" />
                     </Button>
                   </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-phones">Multiple Phone Numbers (comma-separated)</Label>
+                  <Input
+                    id="bulk-phones"
+                    placeholder="+1234567890, +0987654321, ..."
+                    value={bulkPhoneNumbers}
+                    onChange={(e) => setBulkPhoneNumbers(e.target.value)}
+                    disabled={!!phoneNumber}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="date">Date</Label>
@@ -477,6 +582,60 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
                 <Clock className="mr-2 h-5 w-5" />
                 {loading ? 'Scheduling...' : 'Schedule Message'}
               </Button>
+
+              {editingMessage && (
+                <Card className="mt-6 border-primary">
+                  <CardHeader>
+                    <CardTitle className="text-lg">Edit Scheduled Message</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Phone Number</Label>
+                        <Input
+                          value={editingMessage.phone_number}
+                          onChange={(e) => setEditingMessage({...editingMessage, phone_number: e.target.value})}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Date</Label>
+                        <Input
+                          type="date"
+                          value={editingMessage.scheduled_date}
+                          onChange={(e) => setEditingMessage({...editingMessage, scheduled_date: e.target.value})}
+                          min={new Date().toISOString().split('T')[0]}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Message</Label>
+                        <Textarea
+                          value={editingMessage.message}
+                          onChange={(e) => setEditingMessage({...editingMessage, message: e.target.value})}
+                          className="min-h-[100px]"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Time</Label>
+                        <Input
+                          type="time"
+                          value={editingMessage.scheduled_time}
+                          onChange={(e) => setEditingMessage({...editingMessage, scheduled_time: e.target.value})}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button onClick={updateMessage} disabled={loading} className="flex-1">
+                        Update Message
+                      </Button>
+                      <Button onClick={() => setEditingMessage(null)} variant="outline">
+                        Cancel
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -527,10 +686,26 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
                         <Button
                           onClick={() => sendNow(msg.phone_number, msg.message, msg.id)}
                           size="sm"
-                          className="flex-1"
+                          variant="outline"
                         >
                           <Send className="mr-1 h-3 w-3" />
                           Send Now
+                        </Button>
+                        <Button
+                          onClick={() => {
+                            const scheduledDateTime = new Date(msg.scheduled_time);
+                            setEditingMessage({
+                              id: msg.id,
+                              phone_number: msg.phone_number,
+                              message: msg.message,
+                              scheduled_date: scheduledDateTime.toISOString().split('T')[0],
+                              scheduled_time: scheduledDateTime.toTimeString().slice(0, 5)
+                            });
+                          }}
+                          size="sm"
+                          variant="outline"
+                        >
+                          Edit
                         </Button>
                         <Button
                           onClick={() => deleteMessage(msg.id)}
