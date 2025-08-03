@@ -164,26 +164,52 @@ export const MessageScheduler = ({ onSignOut }: MessageSchedulerProps) => {
         });
         console.log('Native notification scheduled with ID:', notificationId);
       } else {
-        // Schedule browser notification using setTimeout
+        // For web/preview, schedule using setTimeout and also add to localStorage for persistence
         const timeUntilScheduled = scheduledTime.getTime() - Date.now();
         console.log('Time until scheduled (ms):', timeUntilScheduled);
         
+        // Store in localStorage for persistence across page reloads
+        const scheduledNotifications = JSON.parse(localStorage.getItem('scheduledNotifications') || '[]');
+        scheduledNotifications.push({
+          messageId,
+          phoneNumber,
+          message,
+          scheduledTime: scheduledTime.getTime(),
+          notificationId: Date.now()
+        });
+        localStorage.setItem('scheduledNotifications', JSON.stringify(scheduledNotifications));
+        
         if (timeUntilScheduled > 0) {
-          setTimeout(() => {
-            if (Notification.permission === 'granted') {
-              const notification = new Notification("WhatsApp Message Reminder", {
-                body: `Time to send message to ${phoneNumber}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
-                icon: '/favicon.ico',
-                tag: messageId
-              });
-              
-              notification.onclick = () => {
-                window.focus();
-                openWhatsApp(phoneNumber, message);
-                updateMessageStatus(messageId, 'sent');
-                loadMessages(); // Refresh the messages list
-                notification.close();
-              };
+          setTimeout(async () => {
+            // Check if notification still exists (wasn't cancelled)
+            const currentNotifications = JSON.parse(localStorage.getItem('scheduledNotifications') || '[]');
+            const notificationExists = currentNotifications.find((n: any) => n.messageId === messageId);
+            
+            if (notificationExists) {
+              if (Notification.permission === 'granted') {
+                const notification = new Notification("WhatsApp Message Reminder", {
+                  body: `Time to send message to ${phoneNumber}: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`,
+                  icon: '/favicon.ico',
+                  tag: messageId
+                });
+                
+                notification.onclick = () => {
+                  window.focus();
+                  openWhatsApp(phoneNumber, message);
+                  updateMessageStatus(messageId, 'sent');
+                  loadMessages(); // Refresh the messages list
+                  notification.close();
+                  
+                  // Remove from localStorage
+                  const updatedNotifications = currentNotifications.filter((n: any) => n.messageId !== messageId);
+                  localStorage.setItem('scheduledNotifications', JSON.stringify(updatedNotifications));
+                };
+              } else {
+                // Fallback: directly open WhatsApp if no notification permission
+                await openWhatsApp(phoneNumber, message);
+                await updateMessageStatus(messageId, 'sent');
+                await loadMessages();
+              }
             }
           }, timeUntilScheduled);
         }
